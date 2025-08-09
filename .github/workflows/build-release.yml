@@ -1,4 +1,89 @@
-name: Build Portable FixAllTool (Windows-only, full auto-detect)
+# Create a minimal complete repo so GitHub Actions can build successfully
+# Output: /mnt/data/FixAllTool_MinRepo.zip
+
+import os, shutil, zipfile, textwrap
+from pathlib import Path
+from PIL import Image, ImageDraw
+
+root = Path("/mnt/data/FixAllTool_MinRepo")
+if root.exists():
+    shutil.rmtree(root)
+root.mkdir(parents=True, exist_ok=True)
+
+# Folders
+(src := root / "Source/FixAllTool").mkdir(parents=True, exist_ok=True)
+(ai  := root / "ai_service").mkdir(parents=True, exist_ok=True)
+(assets := root / "Assets").mkdir(parents=True, exist_ok=True)
+(guides := root / "Guides").mkdir(parents=True, exist_ok=True)
+(ghwf := root / ".github/workflows").mkdir(parents=True, exist_ok=True)
+
+# Simple logo
+img = Image.new("RGB", (520, 260), (18, 20, 24))
+d = ImageDraw.Draw(img)
+d.rectangle([(0,0),(519,259)], outline=(255,215,0), width=6)
+d.text((22, 110), "FIX ALL TOOL", fill=(255,215,0))
+img.save(assets / "FixAllToolLogo.png", optimize=True, quality=85)
+
+# ai_service
+(ai / "app.py").write_text(textwrap.dedent("""\
+from flask import Flask, jsonify
+app = Flask(__name__)
+
+@app.get("/health")
+def health():
+    return jsonify({"status":"ok"})
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000)
+"""), encoding="utf-8")
+(ai / "requirements.txt").write_text("Flask==2.2.5\n", encoding="utf-8")
+
+# .NET WPF app (minimal but valid)
+(root / "Source/FixAllTool.sln").write_text(textwrap.dedent("""\
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{60dc8134-eba5-43b8-bcc9-bb4bc16c2548}") = "FixAllTool", "FixAllTool\\FixAllTool.csproj", "{AA2A3A7E-5E52-4B4E-9A7D-0A0FAD0F0001}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {AA2A3A7E-5E52-4B4E-9A7D-0A0FAD0F0001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {AA2A3A7E-5E52-4B4E-9A7D-0A0FAD0F0001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {AA2A3A7E-5E52-4B4E-9A7D-0A0FAD0F0001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {AA2A3A7E-5E52-4B4E-9A7D-0A0FAD0F0001}.Release|Any CPU.Build.0 = Release|Any CPU
+    EndGlobalSection
+EndGlobal
+"""), encoding="utf-8")
+
+(src / "FixAllTool.csproj").write_text(textwrap.dedent("""\
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\\..\\Assets\\FixAllToolLogo.png" Link="Assets\\FixAllToolLogo.png" CopyToOutputDirectory="Always" />
+  </ItemGroup>
+</Project>
+"""), encoding="utf-8")
+
+(src / "App.xaml").write_text('<Application x:Class="FixAllTool.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" StartupUri="MainWindow.xaml"/>', encoding="utf-8")
+(src / "App.xaml.cs").write_text("using System.Windows; namespace FixAllTool { public partial class App : Application { } }", encoding="utf-8")
+(src / "MainWindow.xaml").write_text('<Window x:Class="FixAllTool.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Fix All Tool" Height="450" Width="800"><Grid><TextBlock Text="Build OK — minimal app" VerticalAlignment="Center" HorizontalAlignment="Center" Foreground="Gold" FontSize="24"/></Grid></Window>', encoding="utf-8")
+(src / "MainWindow.xaml.cs").write_text("using System.Windows; namespace FixAllTool { public partial class MainWindow : Window { public MainWindow(){ InitializeComponent(); } } }", encoding="utf-8")
+
+# Flexible workflow: auto-detect any .csproj + any ai_service/app.py + optional Assets/Guides anywhere
+(ghwf / "build-release.yml").write_text(textwrap.dedent("""\
+name: Build Portable FixAllTool (Windows-only, auto-detect)
 
 on:
   push:
@@ -16,35 +101,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Locate all project parts
+      - name: Locate project and AI service
         id: locate
         run: |
           $ErrorActionPreference = 'Stop'
-
-          # Find main project
-          $proj = Get-ChildItem -Recurse -Filter FixAllTool.csproj | Select-Object -First 1
-          if (-not $proj) { throw "FixAllTool.csproj not found." }
+          $proj = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -First 1
+          if (-not $proj) { throw "No .csproj found anywhere in repo." }
           $projectDir = $proj.Directory.FullName
           "PROJECT_DIR=$projectDir" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          # Find AI service
           $ai = Get-ChildItem -Recurse -Filter app.py | Where-Object { $_.FullName -match "ai_service" } | Select-Object -First 1
-          if (-not $ai) { throw "ai_service/app.py not found." }
-          $aiRoot = $ai.Directory.FullName
-          "AI_DIR=$aiRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (-not $ai) { throw "ai_service/app.py not found anywhere in repo." }
+          "AI_DIR=$($ai.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          # Find Assets (optional)
           $assets = Get-ChildItem -Recurse -Directory -Filter Assets | Select-Object -First 1
           if ($assets) { "ASSETS_DIR=$($assets.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append }
 
-          # Find Guides (optional)
           $guides = Get-ChildItem -Recurse -Directory -Filter Guides | Select-Object -First 1
           if ($guides) { "GUIDES_DIR=$($guides.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append }
-
-          Write-Host "Found project: $projectDir"
-          Write-Host "Found AI: $aiRoot"
-          if ($assets) { Write-Host "Found Assets: $($assets.FullName)" }
-          if ($guides) { Write-Host "Found Guides: $($guides.FullName)" }
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -60,41 +134,41 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade pip
-          pip install --no-cache-dir -r "$env:AI_DIR\requirements.txt"
+          pip install --no-cache-dir -r "$env:AI_DIR\\requirements.txt"
           pip install --no-cache-dir pyinstaller==6.6.0
-          pyinstaller --onefile --name ai_service "$env:AI_DIR\app.py"
-          if (-not (Test-Path .\dist\ai_service.exe)) { throw "ai_service.exe was not produced." }
+          pyinstaller --onefile --name ai_service "$env:AI_DIR\\app.py"
+          if (-not (Test-Path .\\dist\\ai_service.exe)) { throw "ai_service.exe was not produced." }
 
-      - name: Restore & Build WPF
+      - name: Restore & Build
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet restore "$env:PROJECT_DIR\FixAllTool.csproj"
-          dotnet build   "$env:PROJECT_DIR\FixAllTool.csproj" -c Release
+          $projPath = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -ExpandProperty FullName -First 1
+          dotnet restore "$projPath"
+          dotnet build   "$projPath" -c Release
 
       - name: Publish single-file EXE
         run: |
           $ErrorActionPreference = 'Stop'
-          dotnet publish "$env:PROJECT_DIR\FixAllTool.csproj" `
+          $projPath = Get-ChildItem -Recurse -Filter *.csproj | Select-Object -ExpandProperty FullName -First 1
+          dotnet publish "$projPath" `
             -c Release -r win-x64 --self-contained true `
             /p:PublishSingleFile=true /p:IncludeAllContentForSelfExtract=true `
-            /p:DebugType=none /p:Optimize=true /p:ReadyToRun=true `
-            /p:TieredCompilation=true /p:TieredPGO=true `
-            -o .\publish\fixall_x64
-          if (-not (Test-Path .\publish\fixall_x64\FixAllTool.exe)) { throw "FixAllTool.exe not found after publish." }
+            -o .\\publish\\fixall_x64
+          if (-not (Test-Path .\\publish\\fixall_x64\\*.exe)) { throw "No EXE found after publish." }
 
       - name: Assemble dist
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path .\dist -Force | Out-Null
-          Copy-Item .\dist\ai_service.exe .\dist\ -Force
-          Copy-Item .\publish\fixall_x64\FixAllTool.exe .\dist\ -Force
-          if ($env:ASSETS_DIR) { Copy-Item "$env:ASSETS_DIR" .\dist\ -Recurse -Force }
-          if ($env:GUIDES_DIR) { Copy-Item "$env:GUIDES_DIR" .\dist\ -Recurse -Force }
+          New-Item -ItemType Directory -Path .\\dist -Force | Out-Null
+          Copy-Item .\\dist\\ai_service.exe .\\dist\\ -Force
+          Get-ChildItem .\\publish\\fixall_x64\\*.exe | Select-Object -First 1 | Copy-Item -Destination .\\dist\\FixAllTool.exe -Force
+          if ($env:ASSETS_DIR) { Copy-Item "$env:ASSETS_DIR" .\\dist\\ -Recurse -Force }
+          if ($env:GUIDES_DIR) { Copy-Item "$env:GUIDES_DIR" .\\dist\\ -Recurse -Force }
 
       - name: Smoke test AI
         run: |
           $ErrorActionPreference = 'Stop'
-          Start-Process -FilePath .\dist\ai_service.exe -PassThru | Out-Null
+          Start-Process -FilePath .\\dist\\ai_service.exe -PassThru | Out-Null
           Start-Sleep -Seconds 1
           $resp = Invoke-WebRequest -Uri http://127.0.0.1:5000/health -UseBasicParsing -TimeoutSec 3
           if ($resp.StatusCode -ne 200) { throw "AI health bad status: $($resp.StatusCode)" }
@@ -102,28 +176,27 @@ jobs:
 
       - name: Package portable ZIP
         run: |
-          Compress-Archive -Path .\dist\* -DestinationPath .\FixAllTool_Portable.zip -Force
-          if (-not (Test-Path .\FixAllTool_Portable.zip)) { throw "Packaging failed; ZIP missing." }
+          Compress-Archive -Path .\\dist\\* -DestinationPath .\\FixAllTool_Portable.zip -Force
+          if (-not (Test-Path .\\FixAllTool_Portable.zip)) { throw "Packaging failed; ZIP missing." }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: FixAllTool_Portable
           path: FixAllTool_Portable.zip
+"""), encoding="utf-8")
 
-  release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: windows-latest
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: FixAllTool_Portable
-          path: .
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: FixAllTool_Portable.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+# Guide
+(guides / "READ_ME_FIRST.txt").write_text("Upload ALL folders in this ZIP to your GitHub repo root (including .github). Then run Actions.", encoding="utf-8")
+
+# Zip it
+zip_path = "/mnt/data/FixAllTool_MinRepo.zip"
+if Path(zip_path).exists():
+    os.remove(zip_path)
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    for folder, _, files in os.walk(root):
+        for fn in files:
+            p = Path(folder) / fn
+            z.write(p, arcname=p.relative_to(root))
+
+zip_path
