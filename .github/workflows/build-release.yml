@@ -31,21 +31,19 @@ jobs:
       - name: Show tree (debug)
         run: |
           dir
-          dir .\Source
-          dir .\Source\FixAllTool
-          dir .\ai_service
+          dir .\Source -ea 0
+          dir .\Source\FixAllTool -ea 0
+          dir .\ai_service -ea 0
 
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r ai_service\requirements.txt
+          if (Test-Path ai_service\requirements.txt) { pip install -r ai_service\requirements.txt }
           pip install pyinstaller
 
       - name: Build ai_service.exe
         run: |
-          pyinstaller --onefile --name ai_service ai_service\app.py
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item .\dist\ai_service.exe .\dist -Force
+          if (Test-Path ai_service\app.py) { pyinstaller --onefile --name ai_service ai_service\app.py --distpath dist }
 
       - name: Publish WPF single-file EXE
         run: |
