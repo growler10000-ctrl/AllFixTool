@@ -1,0 +1,1 @@
+<Window x:Class="FixAllTool.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Fix All Tool" Height="450" Width="800"><Grid><TextBlock Text="Build OK — minimal app" VerticalAlignment="Center" HorizontalAlignment="Center" Foreground="Gold" FontSize="24"/></Grid></Window>

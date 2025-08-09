@@ -1,0 +1,1 @@
+using System.Windows; namespace FixAllTool { public partial class MainWindow : Window { public MainWindow(){ InitializeComponent(); } } }
