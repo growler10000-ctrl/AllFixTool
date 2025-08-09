@@ -2,21 +2,35 @@ name: Build Portable FixAllTool (Single EXE)
 
 on:
   push:
-    tags: ['v*']      # builds when you publish a tag like v1.0.0
-  workflow_dispatch:   # lets you run it manually
+    tags: ['v*']         # builds when you publish a tag like v1.0.0
+  workflow_dispatch:      # lets you run it manually
 
 jobs:
   build:
     runs-on: windows-latest
-    defaults: { run: { shell: pwsh } }
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.10' }
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Show tree (debug)
+        run: |
+          dir
+          dir .\Source
+          dir .\Source\FixAllTool
+          dir .\ai_service
 
       - name: Build ai_service.exe (PyInstaller)
         working-directory: ai_service
@@ -37,14 +51,17 @@ jobs:
             /p:DebugType=none /p:Optimize=true /p:ReadyToRun=true `
             /p:TieredCompilation=true /p:TieredPGO=true `
             -o .\publish\fixall_x64
+          New-Item -ItemType Directory -Path .\dist -Force | Out-Null
           Copy-Item .\publish\fixall_x64\FixAllTool.exe .\dist\ -Force
           if (Test-Path .\Assets) { Copy-Item .\Assets .\dist\ -Recurse -Force }
           if (Test-Path .\Guides) { Copy-Item .\Guides .\dist\ -Recurse -Force }
 
       - name: Package portable ZIP
-        run: Compress-Archive -Path .\dist\* -DestinationPath .\FixAllTool_Portable.zip -Force
+        run: |
+          Compress-Archive -Path .\dist\* -DestinationPath .\FixAllTool_Portable.zip -Force
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: FixAllTool_Portable
           path: FixAllTool_Portable.zip
@@ -54,8 +71,15 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: FixAllTool_Portable, path: . }
-      - uses: softprops/action-gh-release@v2
-        with: { files: FixAllTool_Portable.zip }
-        env: { GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} }
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FixAllTool_Portable
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: FixAllTool_Portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
