@@ -1,69 +1,120 @@
-name: Build Portable FixAllTool (Single EXE)
+name: Build Portable FixAllTool (Windows-only, strict)
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
+    tags:
+      - 'v*'          # build when you publish tag like v1.0.0
+  workflow_dispatch:   # allow manual runs
 
 jobs:
-  # Optional lint (runs on Linux; won't block Windows build if you remove 'needs')
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ibiqlik/action-yamllint@v3
-        with:
-          file_or_dir: .github/workflows/build-release.yml
-          format: standard
-          strict: false  # set true to fail on style issues
-
   build:
-    # if you keep lint, you can require it with: needs: lint
     runs-on: windows-latest
-    defaults: { run: { shell: pwsh } }
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x' }
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.10' }
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Show tree (debug)
+      # Auto-locate the project anywhere in the repo (handles nested folders)
+      - name: Locate project (strict)
+        id: locate
         run: |
-          dir
-          dir .\Source
-          dir .\Source\FixAllTool
-          dir .\ai_service
+          $ErrorActionPreference = 'Stop'
+          $proj = Get-ChildItem -Recurse -Filter FixAllTool.csproj | Select-Object -First 1
+          if (-not $proj) { throw "FixAllTool.csproj not found anywhere in repo." }
+          $projectDir = $proj.Directory.FullName
+          $rootGuess  = Resolve-Path (Join-Path $projectDir "..\..")
+          if (-not (Test-Path "$rootGuess\ai_service\app.py")) { throw "ai_service/app.py not found (AI is required)." }
+          "PROJECT_ROOT=$rootGuess" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PROJECT_DIR=$projectDir" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "PROJECT_ROOT=$rootGuess"
+          Write-Host "PROJECT_DIR=$projectDir"
 
-      - name: Install Python deps
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Build ai_service.exe (strict)
         run: |
+          $ErrorActionPreference = 'Stop'
           python -m pip install --upgrade pip
-          pip install -r ai_service\requirements.txt
-          pip install pyinstaller
+          pip install --no-cache-dir -r "$env:PROJECT_ROOT\ai_service\requirements.txt"
+          pip install --no-cache-dir pyinstaller==6.6.0
+          pyinstaller --onefile --name ai_service "$env:PROJECT_ROOT\ai_service\app.py"
+          if (-not (Test-Path .\dist\ai_service.exe)) { throw "ai_service.exe was not produced." }
 
-      - name: Build ai_service.exe
+      - name: Restore & Build WPF (strict)
         run: |
-          pyinstaller --onefile --name ai_service ai_service\app.py
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Copy-Item .\dist\ai_service.exe .\dist -Force
+          $ErrorActionPreference = 'Stop'
+          dotnet restore "$env:PROJECT_DIR\FixAllTool.csproj"
+          dotnet build   "$env:PROJECT_DIR\FixAllTool.csproj" -c Release
 
-      - name: Publish WPF single-file EXE
+      - name: Publish single-file EXE (strict)
         run: |
-          dotnet publish .\Source\FixAllTool\FixAllTool.csproj `
+          $ErrorActionPreference = 'Stop'
+          dotnet publish "$env:PROJECT_DIR\FixAllTool.csproj" `
             -c Release -r win-x64 --self-contained true `
-            /p:PublishSingleFile=true `
-            /p:IncludeAllContentForSelfExtract=true `
+            /p:PublishSingleFile=true /p:IncludeAllContentForSelfExtract=true `
             /p:DebugType=none /p:Optimize=true /p:ReadyToRun=true `
             /p:TieredCompilation=true /p:TieredPGO=true `
             -o .\publish\fixall_x64
+          if (-not (Test-Path .\publish\fixall_x64\FixAllTool.exe)) { throw "FixAllTool.exe not found after publish." }
+
+      - name: Assemble dist (strict)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path .\dist -Force | Out-Null
+          Copy-Item .\dist\ai_service.exe .\dist\ -Force
           Copy-Item .\publish\fixall_x64\FixAllTool.exe .\dist\ -Force
-          if (Test-Path .\Assets) { Copy-Item .\Assets .\dist\ -Recurse -Force }
-          if (Test-Path .\Guides) { Copy-Item .\Guides .\dist\ -Recurse -Force }
+          if (Test-Path "$env:PROJECT_ROOT\Assets") { Copy-Item "$env:PROJECT_ROOT\Assets" .\dist\ -Recurse -Force }
+          if (Test-Path "$env:PROJECT_ROOT\Guides") { Copy-Item "$env:PROJECT_ROOT\Guides" .\dist\ -Recurse -Force }
+          if (-not (Test-Path .\dist\FixAllTool.exe)) { throw "Dist missing FixAllTool.exe" }
+          if (-not (Test-Path .\dist\ai_service.exe)) { throw "Dist missing ai_service.exe" }
 
-      - name: Package portable ZIP
-        run: Compress-Archive -Path .\dist\* -DestinationPath .\FixAllTool_Portable.zip -Force
+      - name: Smoke test AI (must pass)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Start-Process -FilePath .\dist\ai_service.exe -PassThru | Out-Null
+          Start-Sleep -Seconds 1
+          $resp = Invoke-WebRequest -Uri http://127.0.0.1:5000/health -UseBasicParsing -TimeoutSec 3
+          if ($resp.StatusCode -ne 200) { throw "AI health bad status: $($resp.StatusCode)" }
+          Get-Process ai_service -ErrorAction SilentlyContinue | ForEach-Object { $_.Kill() }
 
-      - uses: actions/upload-artifact@v4
+      - name: Package portable ZIP (strict)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Compress-Archive -Path .\dist\* -DestinationPath .\FixAllTool_Portable.zip -Force
+          if (-not (Test-Path .\FixAllTool_Portable.zip)) { throw "Packaging failed; ZIP missing." }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
           name: FixAllTool_Portable
           path: FixAllTool_Portable.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FixAllTool_Portable
+          path: .
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: FixAllTool_Portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
